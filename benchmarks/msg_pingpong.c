@@ -159,7 +159,7 @@ static int run(void)
 {
 	char *node, *service;
 	uint64_t flags;
-	int i, ret;
+	int ret;
 
 	ret = ft_read_addr_opts(&node, &service, hints, &flags, &opts);
 	if (ret)
@@ -176,25 +176,11 @@ static int run(void)
 		return ret;
 	}
 
-	if (!(opts.options & FT_OPT_SIZE)) {
-		for (i = 0; i < TEST_CNT; i++) {
-			if (test_size[i].option > opts.size_option)
-				continue;
-			opts.transfer_size = test_size[i].size;
-			init_test(&opts, test_name, sizeof(test_name));
-			ret = pingpong();
-			if (ret)
-				goto out;
-		}
-	} else {
-		init_test(&opts, test_name, sizeof(test_name));
-		ret = pingpong();
-		if (ret)
-			goto out;
-	}
+	ret = do_pingpong();
+	if (ret)
+		return ret;
 
 	ft_finalize();
-out:
 	fi_shutdown(ep, 0);
 	return ret;
 }

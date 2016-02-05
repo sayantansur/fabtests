@@ -86,35 +86,17 @@ static int common_setup(void)
 
 static int run(void)
 {
-	int i, ret;
+	int ret;
 
 	ret = common_setup();
 	if (ret)
 		return ret;
 
-	if (!(opts.options & FT_OPT_SIZE)) {
-		for (i = 0; i < TEST_CNT; i++) {
-			if (test_size[i].option > opts.size_option)
-				continue;
-
-			opts.transfer_size = test_size[i].size;
-			if (opts.transfer_size > fi->ep_attr->max_msg_size)
-				continue;
-
-			init_test(&opts, test_name, sizeof(test_name));
-			ret = pingpong();
-			if (ret)
-				goto out;
-		}
-	} else {
-		init_test(&opts, test_name, sizeof(test_name));
-		ret = pingpong();
-		if (ret)
-			goto out;
-	}
+	ret = do_pingpong();
+	if (ret)
+		return ret;
 
 	ft_finalize();
-out:
 	return ret;
 }
 

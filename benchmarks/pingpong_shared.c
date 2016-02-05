@@ -63,7 +63,7 @@ void ft_pongusage(void)
 	FT_PRINT_OPTS_USAGE("-P", "enable prefix mode");
 }
 
-int pingpong(void)
+static int pingpong(int transfer_size, int iterations, int warmup_iterations)
 {
 	int ret, i;
 
@@ -72,26 +72,26 @@ int pingpong(void)
 		return ret;
 
 	if (opts.dst_addr) {
-		for (i = 0; i < opts.iterations + opts.warmup_iterations; i++) {
-			if (i == opts.warmup_iterations)
+		for (i = 0; i < iterations + warmup_iterations; i++) {
+			if (i == warmup_iterations)
 				ft_start();
 
-			ret = ft_tx(opts.transfer_size);
+			ret = ft_tx(transfer_size);
 			if (ret)
 				return ret;
-			ret = ft_rx(opts.transfer_size);
+			ret = ft_rx(transfer_size);
 			if (ret)
 				return ret;
 		}
 	} else {
-		for (i = 0; i < opts.iterations + opts.warmup_iterations; i++) {
-			if (i == opts.warmup_iterations)
+		for (i = 0; i < iterations + warmup_iterations; i++) {
+			if (i == warmup_iterations)
 				ft_start();
 
-			ret = ft_rx(opts.transfer_size);
+			ret = ft_rx(transfer_size);
 			if (ret)
 				return ret;
-			ret = ft_tx(opts.transfer_size);
+			ret = ft_tx(transfer_size);
 			if (ret)
 				return ret;
 		}
@@ -99,9 +99,32 @@ int pingpong(void)
 	ft_stop();
 
 	if (opts.machr)
-		show_perf_mr(opts.transfer_size, opts.iterations, &start, &end, 2, opts.argc, opts.argv);
+		show_perf_mr(transfer_size, iterations, &start, &end, 2, opts.argc, opts.argv);
 	else
-		show_perf(NULL, opts.transfer_size, opts.iterations, &start, &end, 2);
+		show_perf(NULL, transfer_size, iterations, &start, &end, 2);
 
 	return 0;
+}
+
+int do_pingpong(void)
+{
+	int size, max_size, ret = 0;
+
+	max_size = MIN(FT_PINGPONG_MAX_MSG_SIZE,
+			fi->ep_attr->max_msg_size);
+
+	if (opts.options & FT_OPT_SIZE) {
+		ret = pingpong(opts.transfer_size,
+				opts.iterations,
+				opts.warmup_iterations);
+	} else {
+		for(size = 1; size <= max_size; size = size << 1) {
+			ret = pingpong(size,
+					size_to_count(size),
+					size_to_warmup(size));
+			if (ret)
+				break;
+		}
+	}
+	return ret;
 }

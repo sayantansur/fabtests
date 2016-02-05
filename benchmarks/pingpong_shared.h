@@ -41,10 +41,11 @@ extern "C" {
 #include <stdbool.h>
 
 #define PONG_OPTS "vP"
+#define FT_PINGPONG_MAX_MSG_SIZE (test_size[TEST_CNT - 1].size)
 
 void ft_parsepongopts(int op);
 void ft_pongusage(void);
-int pingpong();
+int do_pingpong();
 
 
 #ifdef __cplusplus

@@ -171,6 +171,7 @@ int ft_read_addr_opts(char **node, char **service, struct fi_info *hints,
 char *size_str(char str[FT_STR_LEN], long long size);
 char *cnt_str(char str[FT_STR_LEN], long long cnt);
 int size_to_count(int size);
+int size_to_warmup(int size);
 
 
 #define FT_PRINTERR(call, retv) \
