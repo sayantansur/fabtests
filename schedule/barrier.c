@@ -133,8 +133,6 @@ int start_barrier(struct fid *sched)
 {
 	int ret;
 
-	fprintf(stderr, "[%s:%d]\n", __func__, __LINE__);
-
 	ret = fi_sched_start(sched);
 	if (ret) {
 		fprintf(stderr, "fi_sched_start (%s)\n", fi_strerror(ret));
@@ -157,7 +155,7 @@ int wait_barrier(struct fid_cq *cq, void *expected_context)
 						cqe.op_context, expected_context);
 				return -1;
 			} else {
-				printf("Barrier complete\n");
+				printf("Barrier complete %p\n", expected_context);
 				break;
 			}
 		} else if (ret < 0 && ret != -FI_EAGAIN) {
@@ -313,16 +311,23 @@ int main(int argc, char* argv[])
 		return ret;
 
 	for(i = 0; i < iterations; i++) {
-		int barrier_id = (i%2);
 
-		ret = start_barrier(sched[barrier_id]);
+		ret = start_barrier(sched[0]);
 		if (ret)
 			return ret;
 		/* a real application could insert work here */
-		ret = wait_barrier(cq, barrier_id ?
-			(void *) 0xBADDCAFE : (void *) 0xDEADBEEF);
+		ret = wait_barrier(cq, (void *) 0xDEADBEEF);
 		if (ret)
 			return ret;
+
+		ret = start_barrier(sched[1]);
+		if (ret)
+			return ret;
+		/* a real application could insert work here */
+		ret = wait_barrier(cq, (void *) 0xBADDCAFE);
+		if (ret)
+			return ret;
+		fprintf(stderr, "[%s:%d] iteration %d complete\n", __func__, __LINE__, i);
 	}
 
 	fi_close(sched[0]);
