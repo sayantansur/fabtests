@@ -67,7 +67,6 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 		msg.tag  = tag;
 		msg.context = &cmds[i];
 
-		fprintf(stderr, "dst %d, msg.addr %lu\n", dst, group[dst]);
 		ret = fi_tsendmsg(ep, &msg, FI_SCHEDULE);
 		if (ret) {
 			fprintf(stderr, "fi_tsendmsg (%s)\n", fi_strerror(ret));
@@ -154,17 +153,20 @@ int wait_barrier(struct fid_cq *cq, void *expected_context)
 		ret = fi_cq_read(cq, &cqe, 1);
 		if (ret > 0) {
 			if (cqe.op_context != expected_context) {
-				fprintf(stderr, "errnoneous comp context %p\n",
-						cqe.op_context);
+				fprintf(stderr, "err comp context %p, expected %p\n",
+						cqe.op_context, expected_context);
+				return -1;
 			} else {
 				printf("Barrier complete\n");
 				break;
 			}
 		} else if (ret < 0 && ret != -FI_EAGAIN) {
-			fprintf(stderr, "fi_sched_start (%s)\n", fi_strerror(ret));
+			fprintf(stderr, "fi_cq_read (%s)\n", fi_strerror(ret));
 			return ret;
 		}
 	} while(1);
+
+	return 0;
 }
 
 int main(int argc, char* argv[])
@@ -318,7 +320,7 @@ int main(int argc, char* argv[])
 			return ret;
 		/* a real application could insert work here */
 		ret = wait_barrier(cq, barrier_id ?
-			(void *) 0xBADCAFE : (void *) 0xDEADBEEF);
+			(void *) 0xBADDCAFE : (void *) 0xDEADBEEF);
 		if (ret)
 			return ret;
 	}
