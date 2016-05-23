@@ -53,7 +53,7 @@ static int rma_write_trigger(void *src, size_t size,
 {
 	int ret;
 	triggered_ctx.event_type = FI_TRIGGER_THRESHOLD;
-	triggered_ctx.trigger.threshold.cntr = cntr;
+	triggered_ctx.trigger.threshold.trig_cntr = cntr;
 	triggered_ctx.trigger.threshold.threshold = threshold;
 	ret = fi_write(alias_ep, src, size, fi_mr_desc(mr), remote_fi_addr, 0,
 			FT_MR_KEY, &triggered_ctx);

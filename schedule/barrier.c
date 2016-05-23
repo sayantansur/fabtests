@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <netinet/in.h>
+#include <string.h>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
@@ -11,8 +13,11 @@
 #include <rdma/fi_errno.h>
 #include <mpi.h>
 
+uint64_t send_msg;
+uint64_t recv_msg;
+
 int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
-		struct fid_cq *cq, int myrank, int nranks,
+		int myrank, int nranks,
 		uint64_t tag, void *context,
 		struct fid **sched_fid)
 {
@@ -21,8 +26,6 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 	struct fi_sched *sched;
 	struct fi_msg_tagged msg = {0};
 	struct iovec iov;
-	uint64_t send_msg = myrank;
-	uint64_t recv_msg = UINT64_MAX;
 
 	/* count the number of steps */
 	mask = 0x1;
@@ -64,6 +67,7 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 		msg.tag  = tag;
 		msg.context = &cmds[i];
 
+		fprintf(stderr, "dst %d, msg.addr %lu\n", dst, group[dst]);
 		ret = fi_tsendmsg(ep, &msg, FI_SCHEDULE);
 		if (ret) {
 			fprintf(stderr, "fi_tsendmsg (%s)\n", fi_strerror(ret));
@@ -80,26 +84,30 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 			return ret;
 		}
 
+		/* two operations per phase */
 		sched[j].ops = malloc(sizeof(struct fi_context *) * 2);
 		if (!sched[j].ops) {
 			fprintf(stderr, "no memory\n");
 			return -ENOMEM;
 		}
 
-		sched[j].edges = malloc(sizeof(struct fi_sched *));
-		if (!sched[j].edges) {
-			fprintf(stderr, "no memory\n");
-			return -ENOMEM;
-		}
+		/* one edge */
 
 		sched[j].ops[0] = &cmds[i];
 		sched[j].ops[1] = &cmds[i+1];
-		sched[j].out_deg = 1;
+		sched[j].num_ops = 2;
 
 		if (j+1 == nsteps) {
 			sched[j].edges = NULL;
+			sched[j].num_edges = 0;
 		} else {
+			sched[j].edges = malloc(sizeof(struct fi_sched *));
+			if (!sched[j].edges) {
+				fprintf(stderr, "no memory\n");
+				return -ENOMEM;
+			}
 			sched[j].edges[0] = &sched[j+1];
+			sched[j].num_edges = 1;
 		}
 	}
 
@@ -125,6 +133,8 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 int start_barrier(struct fid *sched)
 {
 	int ret;
+
+	fprintf(stderr, "[%s:%d]\n", __func__, __LINE__);
 
 	ret = fi_sched_start(sched);
 	if (ret) {
@@ -187,6 +197,9 @@ int main(int argc, char* argv[])
 
 	MPI_Comm_size(MPI_COMM_WORLD, &nranks);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+
+	send_msg = myrank;
+	recv_msg = UINT64_MAX;
 
 	hints = fi_allocinfo();
 	if (!hints)
@@ -254,7 +267,7 @@ int main(int argc, char* argv[])
 		return ret;
 	}
 
-	ret = fi_getname(&ep->fid, &epname, &epnamelen);
+	ret = fi_getname(&ep->fid, epname, &epnamelen);
 	if (ret) {
 		fprintf(stderr, "fi_getname (%s)\n", fi_strerror(ret));
 		return ret;
@@ -274,23 +287,25 @@ int main(int argc, char* argv[])
 
 	MPI_Allgather(epname, epnamelen, MPI_BYTE,
 			allepnames, epnamelen, MPI_BYTE, MPI_COMM_WORLD);
+
 	for(i = 0; i < nranks; i++) {
+		void *addr;
 		if (i == myrank)
 			continue;
-		ret = fi_av_insert(av, &allepnames[i], 1,
+		ret = fi_av_insert(av, &allepnames[i*epnamelen], 1,
 				&group[i], 0, NULL);
-		if (ret) {
+		if (ret != 1) {
 			fprintf(stderr, "fi_av_insert (%s)\n", fi_strerror(ret));
 			return ret;
 		}
 	}
 
-	ret = prepare_barrier(ep, group, cq, myrank, nranks,
+	ret = prepare_barrier(ep, group, myrank, nranks,
 			0x1, (void *) 0xDEADBEEF, &sched[0]);
 	if (ret)
 		return ret;
 
-	ret = prepare_barrier(ep, group, cq, myrank, nranks,
+	ret = prepare_barrier(ep, group, myrank, nranks,
 			0x2, (void *) 0xBADDCAFE, &sched[1]);
 	if (ret)
 		return ret;
