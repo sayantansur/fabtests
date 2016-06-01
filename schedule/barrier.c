@@ -13,18 +13,22 @@
 #include <rdma/fi_errno.h>
 #include <mpi.h>
 
-uint64_t send_msg;
-uint64_t recv_msg;
+struct barrier_request {
+	struct fid		*sched_fid;
+	struct fi_context	*commands;
+	uint64_t		send_msg;
+	uint64_t		recv_msg;
+	void			*context;
+	uint32_t		num_commands;
+};
 
 int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
-		int myrank, int nranks,
-		uint64_t tag, void *context,
-		struct fid **sched_fid)
+		int myrank, int nranks, uint64_t tag,
+		struct barrier_request *breq)
 {
 	int i, j, ret, dst, src, mask, nsteps = 0;
-	struct fi_context *cmds;
-	struct fi_sched *sched;
 	struct fi_msg_tagged msg = {0};
+	struct fi_sched *sched;
 	struct iovec iov;
 
 	/* count the number of steps */
@@ -32,13 +36,6 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 	while (mask < nranks) {
 		nsteps++;
 		mask <<= 1;
-	}
-
-	/* one send and one receive per step */
-	cmds = malloc(sizeof(struct fi_context) * nsteps * 2);
-	if (!cmds) {
-		fprintf(stderr, "no memory\n");
-		return -ENOMEM;
 	}
 
 	sched = malloc(sizeof(struct fi_sched) * nsteps);
@@ -59,13 +56,13 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 				src, MPIR_BARRIER_TAG, comm_ptr,
 				MPI_STATUS_IGNORE, errflag);
 		*/
-		iov.iov_base = &send_msg;
-		iov.iov_len  = sizeof(send_msg);
+		iov.iov_base = &breq->send_msg;
+		iov.iov_len  = sizeof(breq->send_msg);
 		msg.msg_iov   = &iov;
 		msg.iov_count = 1;
 		msg.addr = group[dst];
 		msg.tag  = tag;
-		msg.context = &cmds[i];
+		msg.context = &breq->commands[i];
 
 		ret = fi_tsendmsg(ep, &msg, FI_SCHEDULE);
 		if (ret) {
@@ -73,10 +70,10 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 			return ret;
 		}
 
-		iov.iov_base = &recv_msg;
-		iov.iov_len  = sizeof(recv_msg);
+		iov.iov_base = &breq->recv_msg;
+		iov.iov_len  = sizeof(breq->recv_msg);
 		msg.addr = group[src];
-		msg.context = &cmds[i+1];
+		msg.context = &breq->commands[i+1];
 		ret = fi_trecvmsg(ep, &msg, FI_SCHEDULE);
 		if (ret) {
 			fprintf(stderr, "fi_trecvmsg (%s)\n", fi_strerror(ret));
@@ -90,10 +87,8 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 			return -ENOMEM;
 		}
 
-		/* one edge */
-
-		sched[j].ops[0] = &cmds[i];
-		sched[j].ops[1] = &cmds[i+1];
+		sched[j].ops[0] = &breq->commands[i];
+		sched[j].ops[1] = &breq->commands[i+1];
 		sched[j].num_ops = 2;
 
 		if (j+1 == nsteps) {
@@ -110,7 +105,8 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 		}
 	}
 
-	ret = fi_sched_open(ep, &sched[0], sched_fid, 0, context);
+	ret = fi_sched_open(ep, &sched[0], &breq->sched_fid,
+			0, breq->context);
 	if (ret) {
 		fprintf(stderr, "fi_sched_format (%s)\n", fi_strerror(ret));
 		return ret;
@@ -122,18 +118,17 @@ int prepare_barrier(struct fid_ep *ep, fi_addr_t *group,
 	}
 
 	free(sched);
-	free(cmds);
 
 	MPI_Barrier(MPI_COMM_WORLD);
 
 	return 0;
 }
 
-int start_barrier(struct fid *sched)
+int start_barrier(struct barrier_request *breq)
 {
 	int ret;
 
-	ret = fi_sched_start(sched);
+	ret = fi_sched_start(breq->sched_fid);
 	if (ret) {
 		fprintf(stderr, "fi_sched_start (%s)\n", fi_strerror(ret));
 		return ret;
@@ -142,7 +137,7 @@ int start_barrier(struct fid *sched)
 	return 0;
 }
 
-int wait_barrier(struct fid_cq *cq, void *expected_context)
+int wait_barrier(struct fid_cq *cq, struct barrier_request *breq)
 {
 	int ret;
 	struct fi_cq_entry cqe = {0};
@@ -150,12 +145,12 @@ int wait_barrier(struct fid_cq *cq, void *expected_context)
 	do {
 		ret = fi_cq_read(cq, &cqe, 1);
 		if (ret > 0) {
-			if (cqe.op_context != expected_context) {
+			if (cqe.op_context != breq->context) {
 				fprintf(stderr, "err comp context %p, expected %p\n",
-						cqe.op_context, expected_context);
+						cqe.op_context, breq->context);
 				return -1;
 			} else {
-				printf("Barrier complete %p\n", expected_context);
+				printf("Barrier complete %p\n", breq->context);
 				break;
 			}
 		} else if (ret < 0 && ret != -FI_EAGAIN) {
@@ -169,7 +164,9 @@ int wait_barrier(struct fid_cq *cq, void *expected_context)
 
 int main(int argc, char* argv[])
 {
-	int    i, ret, myrank, nranks, iterations = 1;
+	int    i, j, ret, myrank, nranks;
+	int    iterations = 1, num_out_barriers = 1;
+
 	struct fi_info		*info, *hints;
 	struct fid_fabric	*fabric;
 	struct fid_domain	*domain;
@@ -183,7 +180,8 @@ int main(int argc, char* argv[])
 	struct fi_av_attr	av_attr = {
 					.type   = FI_AV_MAP,
 				};
-	struct fid *sched[2];
+	struct barrier_request *breq;
+
 	char epname[128];
 	size_t  epnamelen = sizeof(epname);
 	char *allepnames;
@@ -191,15 +189,26 @@ int main(int argc, char* argv[])
 
 	MPI_Init(&argc, &argv);
 
-	if (argc > 0) {
+	if (argc > 1) {
 		iterations = atoi(argv[1]);
+	}
+	if (argc > 2) {
+		num_out_barriers = atoi(argv[2]);
 	}
 
 	MPI_Comm_size(MPI_COMM_WORLD, &nranks);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 
-	send_msg = myrank;
-	recv_msg = UINT64_MAX;
+	breq = malloc(sizeof(struct barrier_request) * num_out_barriers);
+	if (!breq) {
+		return -ENOMEM;
+	}
+
+	for(i = 0; i < num_out_barriers; i++) {
+		breq[i].send_msg = myrank;
+		breq[i].recv_msg = UINT64_MAX;
+		breq[i].context = (void *) &breq[i];
+	}
 
 	hints = fi_allocinfo();
 	if (!hints)
@@ -300,38 +309,33 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	ret = prepare_barrier(ep, group, myrank, nranks,
-			0x1, (void *) 0xDEADBEEF, &sched[0]);
-	if (ret)
-		return ret;
-
-	ret = prepare_barrier(ep, group, myrank, nranks,
-			0x2, (void *) 0xBADDCAFE, &sched[1]);
-	if (ret)
-		return ret;
-
-	for(i = 0; i < iterations; i++) {
-
-		ret = start_barrier(sched[0]);
+	for(i = 0; i < num_out_barriers; i++) {
+		ret = prepare_barrier(ep, group, myrank, nranks,
+				(uint64_t) i, &breq[i]);
 		if (ret)
 			return ret;
-		/* a real application could insert work here */
-		ret = wait_barrier(cq, (void *) 0xDEADBEEF);
-		if (ret)
-			return ret;
-
-		ret = start_barrier(sched[1]);
-		if (ret)
-			return ret;
-		/* a real application could insert work here */
-		ret = wait_barrier(cq, (void *) 0xBADDCAFE);
-		if (ret)
-			return ret;
-		fprintf(stderr, "[%s:%d] iteration %d complete\n", __func__, __LINE__, i);
 	}
 
-	fi_close(sched[0]);
-	fi_close(sched[1]);
+	for(i = 0; i < iterations; i++) {
+		for(j = 0; j < num_out_barriers; j++) {
+			ret = start_barrier(&breq[j]);
+			if (ret)
+				return ret;
+		}
+		for(j = 0; j < num_out_barriers; j++) {
+			ret = wait_barrier(cq, &breq[j]);
+			if (ret)
+				return ret;
+		}
+	}
+
+	MPI_Barrier(MPI_COMM_WORLD);
+
+	for(i = 0; i < num_out_barriers; i++) {
+		fi_close(breq[i].sched_fid);
+		free(breq[i].commands);
+	}
+
 	fi_close(&ep->fid);
 	fi_close(&av->fid);
 	fi_close(&cq->fid);
