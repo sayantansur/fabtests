@@ -34,37 +34,59 @@ int prepare_cmd(struct fid_ep *ep, void *buf, size_t len, fi_addr_t addr,
 {
 	int ret;
 	struct iovec iov;
+	struct fi_ioc ioc;
 	struct fi_msg_tagged msg = {0};
+	struct fi_msg_atomic atomic_msg = {0};
 
-	iov.iov_base = buf;
-	iov.iov_len  = len;
-	msg.msg_iov   = &iov;
-	msg.iov_count = 1;
-	msg.addr = addr;
-	msg.tag  = tag;
-	msg.context = context;
+	switch(cmd_type) {
+	case SEND:
+	case RECV:
+		iov.iov_base = buf;
+		iov.iov_len  = len;
+		msg.msg_iov   = &iov;
+		msg.iov_count = 1;
+		msg.addr = addr;
+		msg.tag  = tag;
+		msg.context = context;
+		if (cmd_type == SEND) {
+			ret = fi_tsendmsg(ep, &msg, FI_SCHEDULE);
+			if (ret) {
+				fprintf(stderr, "fi_tsendmsg (%s)\n", fi_strerror(ret));
+				return ret;
+			}
+		} else {
+			ret = fi_trecvmsg(ep, &msg, FI_SCHEDULE);
+			if (ret) {
+				fprintf(stderr, "fi_trecvmsg (%s)\n", fi_strerror(ret));
+				return ret;
+			}
+		}
+		break;
+	case SEND_ATOMIC:
+		ioc.addr = (void *) buf;
+		ioc.count = len;
 
-	if (cmd_type == SEND) {
-		ret = fi_tsendmsg(ep, &msg, FI_SCHEDULE);
+		atomic_msg.msg_iov = &ioc;
+		atomic_msg.desc = NULL;
+		atomic_msg.iov_count = 1;
+		atomic_msg.addr = addr;
+		atomic_msg.tag = tag;
+		atomic_msg.context = context;
+		atomic_msg.data = 0;
+		atomic_msg.tag = tag;
+		atomic_msg.datatype = FI_UINT32;
+		atomic_msg.op = FI_SUM;
+
+		ret = fi_tsend_atomicmsg(ep, &atomic_msg, FI_SCHEDULE);
 		if (ret) {
-			fprintf(stderr, "fi_tsendmsg (%s)\n", fi_strerror(ret));
+			fprintf(stderr, "fi_tsend_atomicmsg (%s)\n", fi_strerror(ret));
 			return ret;
 		}
-	} else if (cmd_type == RECV) {
-		ret = fi_trecvmsg(ep, &msg, FI_SCHEDULE);
-		if (ret) {
-			fprintf(stderr, "fi_trecvmsg (%s)\n", fi_strerror(ret));
-			return ret;
-		}
-	} else if (cmd_type == SEND_ATOMIC) {
-		ret = fi_tsend_atomicmsg(ep, &msg, FI_UINT32, FI_SUM, FI_SCHEDULE);
-		if (ret) {
-			fprintf(stderr, "fi_tsendmsg (%s)\n", fi_strerror(ret));
-			return ret;
-		}
-	} else {
-		return -FI_EINVAL;
+		break;
+	default:
+		return -1;
 	}
+
 	return 0;
 }
 
@@ -183,7 +205,7 @@ int init_reduce(struct fid_ep *ep, fi_addr_t *group,
 		rreq->sched_ops[1].num_edges = 1;
 
 		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
+				1, /* count */
 				group[parent],
 				tag, &rreq->sched_ops[1].ops[0], SEND_ATOMIC);
 		if (ret)
@@ -240,7 +262,7 @@ int init_reduce(struct fid_ep *ep, fi_addr_t *group,
 			return -FI_ENOMEM;
 
 		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
+				1, /* count */
 				group[parent],
 				tag, &rreq->sched_ops[0].ops[0], SEND_ATOMIC);
 		if (ret)
