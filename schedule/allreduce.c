@@ -90,12 +90,86 @@ int prepare_cmd(struct fid_ep *ep, void *buf, size_t len, fi_addr_t addr,
 	return 0;
 }
 
-int init_reduce(struct fid_ep *ep, fi_addr_t *group,
+int child_op(struct fid_ep *ep, struct fi_sched_ops *sched_ops, uint32_t *msg,
+		fi_addr_t *group, int left_child, uint64_t tag,
+		int num_children, int op)
+{
+	int i, ret;
+
+	sched_ops->ops = malloc(sizeof(struct fi_context) * num_children);
+	if (!sched_ops->ops)
+		return -FI_ENOMEM;
+
+	sched_ops->num_ops = num_children;
+
+	for(i=0; i<num_children; i++) {
+		ret = prepare_cmd(ep, msg, sizeof(uint32_t),
+				group[left_child+i],
+				tag, &sched_ops->ops[i], op);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+int parent_op(struct fid_ep *ep, struct fi_sched_ops *sched_ops, uint32_t *msg,
+		uint64_t tag, fi_addr_t parent_addr, int op)
+{
+	int ret;
+	size_t len;
+
+	sched_ops->ops = malloc(sizeof(struct fi_context));
+	if (!sched_ops->ops)
+		return -FI_ENOMEM;
+
+	sched_ops->num_ops = 1;
+
+	if (op == SEND_ATOMIC)
+		len = 1;
+	else
+		len = sizeof(uint32_t);
+
+	ret = prepare_cmd(ep, msg, len,
+			parent_addr, tag,
+			&sched_ops->ops[0], op);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+int create_schedule_phase_array(struct fi_sched_ops **sched_ops, int steps)
+{
+	int i;
+	struct fi_sched_ops *ops;
+
+	ops = malloc(sizeof(struct fi_sched_ops) * steps);
+	if (!ops)
+		return -FI_ENOMEM;
+
+	for(i=0; i<steps; i++) {
+		ops[i].num_edges = 1;
+		if (i == steps-1)
+			ops[i].edges = NULL;
+		else
+			ops[i].edges = &ops[i+1];
+	}
+
+	*sched_ops = ops;
+
+	return 0;
+}
+
+int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		int myrank, int nranks, uint64_t tag,
 		struct reduce_request *rreq)
 {
-	int root, intermediate, leaf, ret,
-	    left_child, right_child, parent;
+	int root=0, intermediate=0, leaf=0, ret,
+	    left_child, right_child, parent, num_children=0;
+	struct fi_cntr_attr	cntr_attr = {
+					.events = FI_CNTR_EVENTS_COMP,
+				};
 
 	left_child = 2*(myrank+1)-1;
 	right_child = left_child+1;
@@ -107,186 +181,108 @@ int init_reduce(struct fid_ep *ep, fi_addr_t *group,
 	else
 		intermediate = 1;
 
+	if (!leaf) {
+		if (left_child == (nranks-1))
+			num_children = 1;
+		else
+			num_children = 2;
+	}
+
+	fprintf(stderr, "[%d] left_child %d right_child %d nranks %d num_children %d"
+			"(root %d intermediate %d leaf %d)\n",
+			myrank, left_child, right_child, nranks, num_children,
+			root, intermediate, leaf);
+
 	parent = myrank/2;
 
 	/* initialize receive buffer with my contribution */
 	rreq->recv_msg = rreq->send_msg;
 
 	if (root) {
-		/* wait for children, and broadcast down.
-		 * total two scheduled ops (assume that ops
-		 * applied are commutative, so order of
-		 * left child and right child does not matter) */
+		/* step 1: wait for children
+		 * step 2: broadcast down to children */
+
+		ret = create_schedule_phase_array(&rreq->sched_ops, 2);
+		if (ret)
+			return ret;
 
 		rreq->sched_ops = malloc(sizeof(struct fi_sched_ops) * 2);
 		if (!rreq->sched_ops)
 			return -FI_ENOMEM;
 
-		rreq->sched_ops[0].num_ops = 2;
-		rreq->sched_ops[0].edges = &rreq->sched_ops[1];
-		rreq->sched_ops[0].num_edges = 1;
-
-		rreq->sched_ops[0].ops = malloc(sizeof(struct fi_context) * 2);
-		if (!rreq->sched_ops[0].ops)
-			return -FI_ENOMEM;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[left_child],
-				tag, &rreq->sched_ops[0].ops[0], RECV);
+		ret = child_op(ep, &rreq->sched_ops[0], &rreq->recv_msg,
+				group, left_child, tag, num_children, RECV);
 		if (ret)
 			return ret;
 
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[right_child],
-				tag, &rreq->sched_ops[0].ops[1], RECV);
-		if (ret)
-			return ret;
-
-		rreq->sched_ops[1].ops = malloc(sizeof(struct fi_context) * 2);
-		if (!rreq->sched_ops[1].ops)
-			return -FI_ENOMEM;
-
-		rreq->sched_ops[1].num_ops = 2;
-		rreq->sched_ops[1].edges = NULL;
-		rreq->sched_ops[1].num_edges = 0;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[left_child],
-				tag, &rreq->sched_ops[1].ops[0], SEND);
-		if (ret)
-			return ret;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[right_child],
-				tag, &rreq->sched_ops[1].ops[1], SEND);
+		ret = child_op(ep, &rreq->sched_ops[1], &rreq->recv_msg,
+				group, left_child, tag, num_children, SEND);
 		if (ret)
 			return ret;
 
 	} else if (intermediate) {
-		/* wait for children, send up to parent,
-		 * wait for parent, send down to children */
+		/* step 1: wait for children
+		 * step 2: send up to parent
+		 * step 3: wait for parent
+		 * step 4: send down to children */
 
-		rreq->sched_ops = malloc(sizeof(struct fi_sched_ops) * 4);
-		if (!rreq->sched_ops)
-			return -FI_ENOMEM;
-
-		rreq->sched_ops[0].num_ops = 2;
-		rreq->sched_ops[0].edges = &rreq->sched_ops[1];
-		rreq->sched_ops[0].num_edges = 1;
-
-		rreq->sched_ops[0].ops = malloc(sizeof(struct fi_context) * 2);
-		if (!rreq->sched_ops[0].ops)
-			return -FI_ENOMEM;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[left_child],
-				tag, &rreq->sched_ops[0].ops[0], RECV);
+		ret = create_schedule_phase_array(&rreq->sched_ops, 4);
 		if (ret)
 			return ret;
 
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[right_child],
-				tag, &rreq->sched_ops[0].ops[1], RECV);
+		ret = child_op(ep, &rreq->sched_ops[0], &rreq->recv_msg,
+				group, left_child, tag, num_children, RECV);
 		if (ret)
 			return ret;
 
-		rreq->sched_ops[1].ops = malloc(sizeof(struct fi_context) * 1);
-		if (!rreq->sched_ops[1].ops)
-			return -FI_ENOMEM;
-
-		rreq->sched_ops[1].num_ops = 1;
-		rreq->sched_ops[1].edges = &rreq->sched_ops[2];
-		rreq->sched_ops[1].num_edges = 1;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				1, /* count */
-				group[parent],
-				tag, &rreq->sched_ops[1].ops[0], SEND_ATOMIC);
+		ret = parent_op(ep, &rreq->sched_ops[1],
+				&rreq->recv_msg, tag, group[parent],
+				SEND_ATOMIC);
 		if (ret)
 			return ret;
 
-		rreq->sched_ops[2].num_ops = 1;
-		rreq->sched_ops[2].edges = &rreq->sched_ops[3];
-		rreq->sched_ops[2].num_edges = 1;
+		ret = parent_op(ep, &rreq->sched_ops[2],
+				&rreq->recv_msg, tag, group[parent],
+				RECV);
 
-		rreq->sched_ops[2].ops = malloc(sizeof(struct fi_context) * 1);
-		if (!rreq->sched_ops[2].ops)
-			return -FI_ENOMEM;
+		ret = child_op(ep, &rreq->sched_ops[3], &rreq->recv_msg,
+				group, left_child, tag, num_children, SEND);
 
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[parent],
-				tag, &rreq->sched_ops[2].ops[0], RECV);
-		if (ret)
-			return ret;
-
-		rreq->sched_ops[3].num_ops = 2;
-		rreq->sched_ops[3].edges = NULL;
-		rreq->sched_ops[3].num_edges = 0;
-
-		rreq->sched_ops[3].ops = malloc(sizeof(struct fi_context) * 2);
-		if (!rreq->sched_ops[3].ops)
-			return -FI_ENOMEM;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[left_child],
-				tag, &rreq->sched_ops[3].ops[0], SEND);
-		if (ret)
-			return ret;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[right_child],
-				tag, &rreq->sched_ops[3].ops[1], SEND);
 		if (ret)
 			return ret;
 	} else {
-		/* send to parent, wait from parent */
-		rreq->sched_ops = malloc(sizeof(struct fi_sched_ops) * 2);
-		if (!rreq->sched_ops)
-			return -FI_ENOMEM;
-
-		rreq->sched_ops[0].num_ops = 1;
-		rreq->sched_ops[0].edges = &rreq->sched_ops[1];
-		rreq->sched_ops[0].num_edges = 1;
-
-		rreq->sched_ops[0].ops = malloc(sizeof(struct fi_context) * 1);
-		if (!rreq->sched_ops[0].ops)
-			return -FI_ENOMEM;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				1, /* count */
-				group[parent],
-				tag, &rreq->sched_ops[0].ops[0], SEND_ATOMIC);
+		/* step 1: send to parent
+		 * step 2: wait for parent */
+		ret = create_schedule_phase_array(&rreq->sched_ops, 2);
 		if (ret)
 			return ret;
 
-		rreq->sched_ops[1].ops = malloc(sizeof(struct fi_context) * 1);
-		if (!rreq->sched_ops[1].ops)
-			return -FI_ENOMEM;
+		ret = parent_op(ep, &rreq->sched_ops[0], &rreq->recv_msg, tag,
+				group[parent], SEND_ATOMIC);
+		if (ret)
+			return ret;
 
-		rreq->sched_ops[1].num_ops = 1;
-		rreq->sched_ops[1].edges = NULL;
-		rreq->sched_ops[1].num_edges = 0;
-
-		ret = prepare_cmd(ep, &rreq->recv_msg,
-				sizeof(rreq->recv_msg),
-				group[parent],
-				tag, &rreq->sched_ops[1].ops[0], RECV);
+		ret = parent_op(ep, &rreq->sched_ops[1], &rreq->recv_msg, tag,
+				group[parent], RECV);
 		if (ret)
 			return ret;
 	}
 
+	ret = fi_cntr_open(domain, &cntr_attr, &rreq->cntr, NULL);
+	if (ret) {
+		fprintf(stderr, "fi_cntr_open (%s)\n", fi_strerror(ret));
+		return ret;
+	}
+
 	ret = fi_sched_open(ep, &rreq->sched_fid, rreq->context);
 	if (ret) {
-		fprintf(stderr, "fi_sched_format (%s)\n", fi_strerror(ret));
+		fprintf(stderr, "fi_sched_open (%s)\n", fi_strerror(ret));
+		return ret;
+	}
+
+	ret = fi_sched_bind(rreq->sched_fid, &rreq->cntr->fid, 0);
+	if (ret) {
+		fprintf(stderr, "fi_sched_bind (%s)\n", fi_strerror(ret));
 		return ret;
 	}
 
@@ -370,10 +366,6 @@ int main(int argc, char* argv[])
 	struct fid_cq		*cq;
 	struct fid_av		*av;
 	struct fid_ep		*ep;
-	struct fid_cntr		**cntr;
-	struct fi_cntr_attr	cntr_attr = {
-					.events = FI_CNTR_EVENTS_COMP,
-				};
 	struct fi_cq_attr 	cq_attr = {
 					.size 	= 128,
 					.format = FI_CQ_FORMAT_CONTEXT,
@@ -517,7 +509,7 @@ int main(int argc, char* argv[])
 	}
 
 	for(i = 0; i < num_reductions; i++) {
-		ret = init_reduce(ep, group, myrank, nranks,
+		ret = init_reduce(domain, ep, group, myrank, nranks,
 				(uint64_t) i, &rreq[i]);
 		if (ret)
 			return ret;
