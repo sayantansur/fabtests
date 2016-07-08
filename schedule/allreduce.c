@@ -149,11 +149,13 @@ int create_schedule_phase_array(struct fi_sched_ops **sched_ops, int steps)
 		return -FI_ENOMEM;
 
 	for(i=0; i<steps; i++) {
-		ops[i].num_edges = 1;
-		if (i == steps-1)
+		if (i == steps-1) {
 			ops[i].edges = NULL;
-		else
+			ops[i].num_edges = 0;
+		} else {
 			ops[i].edges = &ops[i+1];
+			ops[i].num_edges = 1;
+		}
 	}
 
 	*sched_ops = ops;
@@ -286,7 +288,7 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		return ret;
 	}
 
-	ret = fi_sched_setup(rreq->sched_fid, rreq->sched_ops, 0);
+	ret = fi_sched_setup(rreq->sched_fid, &rreq->sched_ops[0], 0);
 	if (ret) {
 		fprintf(stderr, "fi_sched_setup (%s)\n", fi_strerror(ret));
 		return ret;
