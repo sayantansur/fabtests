@@ -286,6 +286,12 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		return ret;
 	}
 
+	ret = fi_sched_setup(rreq->sched_fid, rreq->sched_ops, 0);
+	if (ret) {
+		fprintf(stderr, "fi_sched_setup (%s)\n", fi_strerror(ret));
+		return ret;
+	}
+
 	MPI_Barrier(MPI_COMM_WORLD);
 
 	return 0;
