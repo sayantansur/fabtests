@@ -208,10 +208,6 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		if (ret)
 			return ret;
 
-		rreq->sched_ops = malloc(sizeof(struct fi_sched_ops) * 2);
-		if (!rreq->sched_ops)
-			return -FI_ENOMEM;
-
 		ret = child_op(ep, &rreq->sched_ops[0], &rreq->recv_msg,
 				group, left_child, tag, num_children, RECV);
 		if (ret)
