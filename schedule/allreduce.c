@@ -27,6 +27,7 @@ struct reduce_request {
 	uint32_t		send_msg;
 	uint32_t		recv_msg;
 	void			*context;
+	int			num_sched_ops;
 };
 
 int prepare_cmd(struct fid_ep *ep, void *buf, size_t len, fi_addr_t addr,
@@ -204,7 +205,10 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		/* step 1: wait for children
 		 * step 2: broadcast down to children */
 
-		ret = create_schedule_phase_array(&rreq->sched_ops, 2);
+		rreq->num_sched_ops = 2;
+
+		ret = create_schedule_phase_array(&rreq->sched_ops,
+				rreq->num_sched_ops);
 		if (ret)
 			return ret;
 
@@ -224,7 +228,10 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 		 * step 3: wait for parent
 		 * step 4: send down to children */
 
-		ret = create_schedule_phase_array(&rreq->sched_ops, 4);
+		rreq->num_sched_ops = 4;
+
+		ret = create_schedule_phase_array(&rreq->sched_ops,
+				rreq->num_sched_ops);
 		if (ret)
 			return ret;
 
@@ -251,7 +258,9 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 	} else {
 		/* step 1: send to parent
 		 * step 2: wait for parent */
-		ret = create_schedule_phase_array(&rreq->sched_ops, 2);
+		rreq->num_sched_ops = 2;
+		ret = create_schedule_phase_array(&rreq->sched_ops,
+				rreq->num_sched_ops);
 		if (ret)
 			return ret;
 
@@ -298,18 +307,9 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 int finalize_reduce(struct reduce_request *rreq,
 		int myrank, int nranks)
 {
-	int i, n, leaf, left_child;
+	int i;
 
-	left_child = 2*(myrank+1)-1;
-
-	if (myrank == 0)
-		n = 2;
-	else if (left_child > nranks)
-		n = 4;
-	else
-		n = 2;
-
-	for(i=0; i=n; i++)
+	for(i=0; i<rreq->num_sched_ops; i++)
 		free(rreq->sched_ops[i].ops);
 
 	free(rreq->sched_ops);
@@ -348,11 +348,11 @@ int wait_reduce(struct reduce_request *rreq, uint64_t threshold)
 
 int check_reduce(uint32_t result, int nranks, int reduce_instance)
 {
-	float sum = (nranks/2.0)*(reduce_instance*2+nranks);
+	float sum = (nranks/2.0)*(reduce_instance*2+nranks-1);
 
 	if (result != (uint32_t) sum) {
 		fprintf(stderr, "expected %u, but got %u\n",
-				sum, result);
+				(uint32_t) sum, result);
 		return -FI_EOTHER;
 	}
 	return 0;
@@ -532,8 +532,10 @@ int main(int argc, char* argv[])
 
 			ret = check_reduce(rreq[j].recv_msg,
 					nranks, j);
-			if (ret)
+			if (ret) {
+				fprintf(stderr, "check_reduce failed!\n");
 				return ret;
+			}
 		}
 	}
 
