@@ -191,15 +191,7 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 			num_children = 2;
 	}
 
-	fprintf(stderr, "[%d] left_child %d right_child %d nranks %d num_children %d"
-			"(root %d intermediate %d leaf %d)\n",
-			myrank, left_child, right_child, nranks, num_children,
-			root, intermediate, leaf);
-
 	parent = myrank/2;
-
-	/* initialize receive buffer with my contribution */
-	rreq->recv_msg = rreq->send_msg;
 
 	if (root) {
 		/* step 1: wait for children
@@ -521,6 +513,9 @@ int main(int argc, char* argv[])
 
 	for(i = 0; i < iterations; i++) {
 		for(j = 0; j < num_reductions; j++) {
+			/* initialize receive buffer with my contribution */
+			rreq[j].recv_msg = rreq[j].send_msg;
+
 			ret = start_reduce(&rreq[j]);
 			if (ret)
 				return ret;
@@ -537,6 +532,7 @@ int main(int argc, char* argv[])
 				return ret;
 			}
 		}
+		MPI_Barrier(MPI_COMM_WORLD);
 	}
 
 	MPI_Barrier(MPI_COMM_WORLD);
