@@ -550,6 +550,8 @@ int main(int argc, char* argv[])
 	free(group);
 	free(allepnames);
 
+	fprintf(stderr, "completing executed %d iterations of %d concurrent reductions\n",
+			iterations, num_reductions);
 	MPI_Finalize();
 	return ret;
 }
