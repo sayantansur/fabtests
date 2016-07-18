@@ -179,7 +179,7 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 
 	if (myrank == 0)
 		root = 1;
-	else if (left_child > nranks)
+	else if (left_child >= nranks)
 		leaf = 1;
 	else
 		intermediate = 1;
@@ -191,7 +191,7 @@ int init_reduce(struct fid_domain *domain, struct fid_ep *ep, fi_addr_t *group,
 			num_children = 2;
 	}
 
-	parent = myrank/2;
+	parent = (myrank-1)/2;
 
 	if (root) {
 		/* step 1: wait for children
